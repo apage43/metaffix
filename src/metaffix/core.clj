@@ -20,12 +20,12 @@
     (getMaxSize [] CachedData/MAX_SIZE)))
 
 (defn cbitem
-  "Fetch JSON item with `key` from `conn`"
+  "Fetch JSON item with key `k` from `conn`"
   [conn k]
   (cb/get conn k json-transcoder))
 
 (defn cb-update
-  "Atomically update a JSON item with the result of applying f to it."
+  "Atomically update a JSON item with the result of applying `f` to it."
   [conn k f]
    (let [mutation
          (proxy [CASMutation] []
@@ -57,7 +57,7 @@
                                candidate-nodes))))
 (defn process-blob
   "Fetch a blob by OID. Will try each node marked as having the blob until one succeeds,
-   else returns nil. On success returns the value of calling f on the resulting stream."
+   else returns nil. On success returns the value of calling `f` on the resulting stream."
   [cbconn oid f]
   (let [blobdata (cbitem cbconn (str "/" oid))
         candidate-nodes (keys (:nodes blobdata))

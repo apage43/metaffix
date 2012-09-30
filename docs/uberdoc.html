@@ -3032,37 +3032,34 @@ net.brehaut.ClojureTools = (function (SH) {
 </div><div class="dependencies"><h3>dependencies</h3><table><tr><td class="dep-name">org.clojure/clojure</td><td class="dotted"><hr /></td><td class="dep-version">1.4.0</td></tr><tr><td class="dep-name">org.clojure/tools.cli</td><td class="dotted"><hr /></td><td class="dep-version">0.2.2</td></tr><tr><td class="dep-name">clj-http</td><td class="dotted"><hr /></td><td class="dep-version">0.5.3</td></tr><tr><td class="dep-name">cheshire</td><td class="dotted"><hr /></td><td class="dep-version">4.0.3</td></tr><tr><td class="dep-name">org.apache.tika/tika-core</td><td class="dotted"><hr /></td><td class="dep-version">1.2</td></tr><tr><td class="dep-name">org.apache.tika/tika-parsers</td><td class="dotted"><hr /></td><td class="dep-version">1.2</td></tr><tr><td class="dep-name">clojurewerkz/spyglass</td><td class="dotted"><hr /></td><td class="dep-version">1.1.0-SNAPSHOT</td></tr></table></div></td><td class="codes" style="text-align: center; vertical-align: middle;color: #666;padding-right:20px"><br /><br /><br />(this space intentionally left almost blank)</td></tr><tr><td class="docs"><div class="toc"><a name="toc"><h3>namespaces</h3></a><ul><li><a href="#metaffix.core">metaffix.core</a></li><li><a href="#metaffix.tika">metaffix.tika</a></li><li><a href="#metaffix.view">metaffix.view</a></li></ul></div></td><td class="codes">&nbsp;</td></tr><tr><td class="docs"><div class="docs-header"><a class="anchor" href="#metaffix.core" name="metaffix.core"><h1 class="project-name">metaffix.core</h1><a class="toc-link" href="#toc">toc</a></a></div></td><td class="codes" /></tr><tr><td class="docs">
 </td><td class="codes"><pre class="brush: clojure">(ns metaffix.core
   (:use [clojure.tools.cli :only [cli]])
+  (:import [net.spy.memcached CachedData CASMutator CASMutation]
+           [net.spy.memcached.transcoders Transcoder])
   (:require [metaffix.view :as view]
             [metaffix.tika :as tika]
             [clojure.string :as string]
             [clojure.walk :as walk]
             [cheshire.core :as json]
-            [clojurewerkz.spyglass.couchbase :as cbcli]
             [clj-http.client :as http]
+            [clojurewerkz.spyglass.couchbase :as cbcli]
             [clojurewerkz.spyglass.client :as cb])
   (:gen-class))</pre></td></tr><tr><td class="docs">
-</td><td class="codes"><pre class="brush: clojure">(defn gets [conn k]
-  (let [retr (.gets conn k)]
-    (if retr
-      {:value (.getValue retr) :cas (.getCas retr)})))</pre></td></tr><tr><td class="docs"><p>Fetch JSON item with <code>key</code> from <code>conn</code>, and return parsed value with CAS id on metadata as :cas</p>
+</td><td class="codes"><pre class="brush: clojure">(def json-transcoder
+  (proxy [Transcoder] []
+    (asyncDecode [_] false)
+    (decode [bs] (json/parse-string (String. (.getData bs)) true))
+    (encode [o] (CachedData. 0 (.getBytes (json/encode o)) CachedData/MAX_SIZE))
+    (getMaxSize [] CachedData/MAX_SIZE)))</pre></td></tr><tr><td class="docs"><p>Fetch JSON item with key <code>k</code> from <code>conn</code></p>
 </td><td class="codes"><pre class="brush: clojure">(defn cbitem
   [conn k]
-  (let [item (gets conn k)]
-    (if item (with-meta (json/parse-string (:value item) true) {:cas (:cas item)}))))</pre></td></tr><tr><td class="docs"><p>Atomically update a JSON item with the result of applying f to it.</p>
+  (cb/get conn k json-transcoder))</pre></td></tr><tr><td class="docs"><p>Atomically update a JSON item with the result of applying <code>f</code> to it.</p>
 </td><td class="codes"><pre class="brush: clojure">(defn cb-update
-  ([conn k f]
-   (cb-update conn k f 1000))
-  ([conn k f maxretries]
-   (try
-     (loop [retries maxretries]
-      (if (pos? retries)
-        (let [item (cbitem conn k)]
-          (if (nil? item) :item_error
-            (if (not= :ok
-                      (cb/cas conn k (:cas (meta item)) (json/encode (f item))))
-              (recur (dec retries))
-              :ok))) :too_many_retries))
-     (catch Exception e :item_error))))</pre></td></tr><tr><td class="docs"><p>Get CAPI base URL for a Couchbase cluster</p>
+  [conn k f]
+   (let [mutation
+         (proxy [CASMutation] []
+           (getNewValue [current]
+             (f current)))
+         mutator (CASMutator. conn json-transcoder)]
+     (.cas mutator k nil 0 mutation)))</pre></td></tr><tr><td class="docs"><p>Get CAPI base URL for a Couchbase cluster</p>
 </td><td class="codes"><pre class="brush: clojure">(defn capi-bases
   [couchbasebase]
   (-&gt;&gt; (http/get (str couchbasebase &quot;pools/default&quot;) {:as :json})
@@ -3070,37 +3067,49 @@ net.brehaut.ClojureTools = (function (SH) {
        :nodes
        (mapv :couchApiBase)))</pre></td></tr><tr><td class="docs">
 </td><td class="codes"><pre class="brush: clojure">(defn cbfs-files [capis bucket]
-  (-&gt;&gt; (view/view-seq (str (rand-nth capis) bucket &quot;/_design/cbfs/_view/file_browse&quot;) nil {} {:include_docs true})
-       (map (comp (juxt (comp :id :meta) :json) :doc))))</pre></td></tr><tr><td class="docs"><p>Fetch a blob by OID. Will try each node marked as having the blob until one succeeds, else returns nil. On success returns a stream.</p>
-</td><td class="codes"><pre class="brush: clojure">(defn fetch-blob
-  [cbconn oid]
+  (-&gt;&gt; (view/view-seq
+         (str (rand-nth capis) bucket &quot;/_design/cbfs/_view/file_browse&quot;)
+         {:params {:include_docs true}})
+       (map (comp (juxt (comp :id :meta) :json) :doc))))</pre></td></tr><tr><td class="docs"><p>Fetch a blob by OID. Will try each node marked as having the blob until one succeeds,
+   else returns nil. On success returns the value of calling <code>f</code> on the resulting stream.</p>
+</td><td class="codes"><pre class="brush: clojure">(defn open-blob
+  [cbconn oid candidate-nodes]
+  (first (drop-while nil? (map (fn [nodename]
+                                 (let [nodedata (cbitem cbconn (str &quot;/&quot; (name nodename)))
+                                       bloburl (str &quot;http://&quot; (:addr nodedata) (:bindaddr nodedata) &quot;/.cbfs/blob/&quot; oid)]
+                                   (try (:body (http/get bloburl {:as :stream})) (catch Exception e nil))))
+                               candidate-nodes))))
+(defn process-blob
+  [cbconn oid f]
   (let [blobdata (cbitem cbconn (str &quot;/&quot; oid))
-        candidate-nodes (keys (:nodes blobdata))]
-    (first (drop-while nil? (map (fn [nodename]
-                                   (let [nodedata (cbitem cbconn (str &quot;/&quot; (name nodename)))
-                                         bloburl (str &quot;http://&quot; (:addr nodedata) (:bindaddr nodedata) &quot;/.cbfs/blob/&quot; oid)]
-                                     (try (:body (http/get bloburl {:as :stream})) (catch Exception e nil))))
-                                 candidate-nodes)))))</pre></td></tr><tr><td class="docs">
-</td><td class="codes"><pre class="brush: clojure">(defn metaffix [{cburl :couchbase cbbucket :bucket cbpass :password maxsize :max-size}]
+        candidate-nodes (keys (:nodes blobdata))
+        blobstream (open-blob cbconn oid candidate-nodes)]
+    (when blobstream
+      (with-open [bs blobstream]
+        (f bs)))))</pre></td></tr><tr><td class="docs">
+</td><td class="codes"><pre class="brush: clojure">(defn metaffix [{cburl :couchbase cbbucket :bucket cbpass :password
+                 maxsize :max-size minsize :min-size}]
   (let [cbconn (cbcli/connection [(str cburl &quot;pools&quot;)] cbbucket cbpass)
         capis (capi-bases cburl)
         eligible-files (filter (fn [[file-id {:keys [length userdata oid]}]]
                                  (and
                                   ; Not bigger than maxsize
-                                  (&lt;= maxsize length)
+                                  (&gt;= maxsize length)
+                                  ; Not smaller than minsize
+                                  (&lt;= minsize length)
                                   ; Unprocessed or out of date
                                   (or (nil? (:metaffix userdata))
                                       (not= (get-in userdata [:metaffix :oid]) oid)))) (cbfs-files capis cbbucket))]
     (doseq [[id {:keys [oid]}] eligible-files]
-      (let [item-stream (fetch-blob cbconn oid)]
-        (if item-stream
-          (let [metadata (assoc (tika/parse item-stream) :oid oid)]
-            (if (= :ok (cb-update cbconn id
-                                        #(update-in % [:userdata] assoc :metaffix metadata)))
-              (println &quot;Affixed metadata to file: &quot; id)
-              (println &quot;WARN: Couldn't update file &quot; id))
-            (.close item-stream))
-          (println &quot;Could not fetch blob: &quot; oid)))))
+      (let [metadata (process-blob cbconn oid tika/parse)]
+        (if metadata
+          (if (try (cb-update cbconn id #(update-in % [:userdata]
+                                               assoc :metaffix (assoc metadata :oid oid)))
+                (catch Exception e
+                  (println &quot;Exception updating metadata on file&quot; e)))
+            (println &quot;Metadata affixed to file&quot; id)
+            (println &quot;Error affixing metadata to file&quot; id))
+          (println &quot;Error processing file&quot; id)))))
   (println &quot;Done!&quot;))</pre></td></tr><tr><td class="docs">
 </td><td class="codes"><pre class="brush: clojure">(def num-suffixes
   {&quot;G&quot; (* 1024 1024 1024)
@@ -3119,10 +3128,12 @@ net.brehaut.ClojureTools = (function (SH) {
                     [&quot;-c&quot; &quot;--couchbase&quot; &quot;URL of Couchbase cluster&quot; :default &quot;http://localhost:8091/&quot;]
                     [&quot;-b&quot; &quot;--bucket&quot; &quot;CBFS bucket name on Couchbase&quot; :default &quot;cbfs&quot;]
                     [&quot;-p&quot; &quot;--password&quot; &quot;Password for the Couchbase bucket&quot; :default ]
-                    [&quot;-m&quot; &quot;--max-size&quot; &quot;Don't attempt to tag files larger than this size. (Can use K, M, G suffix)&quot; :default 10485760 :parse-fn dehumanize]
+                    [&quot;-m&quot; &quot;--max-size&quot; &quot;Don't attempt to tag files larger than this size&quot; :default 10485760 :parse-fn dehumanize]
+                    [&quot;-n&quot; &quot;--min-size&quot; &quot;Don't attempt to tag files smaller than this size&quot; :default 0 :parse-fn dehumanize]
                     [&quot;-h&quot; &quot;--help&quot; &quot;Show help&quot; :default false :flag true])]
     (when (:help config)
       (println usage)
+      (println &quot;Sizes can take numbers suffixed with K, M, G.&quot;)
       (System/exit 0))
     (println &quot;Config: &quot; (pr-str config))
     (metaffix config)))</pre></td></tr><tr><td class="spacer docs">&nbsp;</td><td class="codes" /></tr><tr><td class="docs"><div class="docs-header"><a class="anchor" href="#metaffix.tika" name="metaffix.tika"><h1 class="project-name">metaffix.tika</h1><a class="toc-link" href="#toc">toc</a></a></div></td><td class="codes" /></tr><tr><td class="docs">
@@ -3186,10 +3197,10 @@ net.brehaut.ClojureTools = (function (SH) {
        (let [[nextcurs rows] (fetch-view-chunk @cursatom)]
          (reset! cursatom nextcurs)
          (concat rows (lazy-seq (view-iterator cursatom)))))))</pre></td></tr><tr><td class="docs">
-</td><td class="codes"><pre class="brush: clojure">(defn view-seq [url &amp; [start end parms]]
+</td><td class="codes"><pre class="brush: clojure">(defn view-seq [url {:keys [start end params]}]
   (let [separms (merge {}
                        (if start {:startkey (json/encode start)})
                        (if end {:endkey (json/encode end)}))
-        cursatom (atom (view-cursor url (merge separms parms)))]
+        cursatom (atom (view-cursor url (merge separms params)))]
     (view-iterator cursatom)))</pre></td></tr><tr><td class="spacer docs">&nbsp;</td><td class="codes" /></tr></table><div class="footer">Generated by <a href="https://github.com/fogus/marginalia">Marginalia</a>.&nbsp;&nbsp;Syntax highlighting provided by Alex Gorbatchev's <a href="http://alexgorbatchev.com/SyntaxHighlighter/">SyntaxHighlighter</a></div><script type="text/javascript">SyntaxHighlighter.defaults['gutter'] = false;
        SyntaxHighlighter.all()</script></body></html>
