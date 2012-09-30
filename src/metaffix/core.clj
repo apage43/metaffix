@@ -45,8 +45,7 @@
 (defn cbfs-files [capis bucket]
   (->> (view/view-seq
          (str (rand-nth capis) bucket "/_design/cbfs/_view/file_browse")
-         nil {} ; All the files
-         {:include_docs true})
+         {:params {:include_docs true}})
        (map (comp (juxt (comp :id :meta) :json) :doc))))
 
 (defn open-blob

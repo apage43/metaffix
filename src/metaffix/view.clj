@@ -36,9 +36,9 @@
          (reset! cursatom nextcurs)
          (concat rows (lazy-seq (view-iterator cursatom)))))))
 
-(defn view-seq [url & [start end parms]]
+(defn view-seq [url {:keys [start end params]}]
   (let [separms (merge {}
                        (if start {:startkey (json/encode start)})
                        (if end {:endkey (json/encode end)}))
-        cursatom (atom (view-cursor url (merge separms parms)))]
+        cursatom (atom (view-cursor url (merge separms params)))]
     (view-iterator cursatom)))
