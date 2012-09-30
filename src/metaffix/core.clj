@@ -61,13 +61,16 @@
                                      (try (:body (http/get bloburl {:as :stream})) (catch Exception e nil))))
                                  candidate-nodes)))))
 
-(defn metaffix [{cburl :couchbase cbbucket :bucket cbpass :password maxsize :max-size}]
+(defn metaffix [{cburl :couchbase cbbucket :bucket cbpass :password
+                 maxsize :max-size minsize :min-size}]
   (let [cbconn (cbcli/connection [(str cburl "pools")] cbbucket cbpass)
         capis (capi-bases cburl)
         eligible-files (filter (fn [[file-id {:keys [length userdata oid]}]]
                                  (and
                                   ; Not bigger than maxsize
                                   (>= maxsize length)
+                                  ; Not smaller than minsize
+                                  (<= minsize length)
                                   ; Unprocessed or out of date
                                   (or (nil? (:metaffix userdata))
                                       (not= (get-in userdata [:metaffix :oid]) oid)))) (cbfs-files capis cbbucket))]
@@ -104,6 +107,7 @@
                     ["-b" "--bucket" "CBFS bucket name on Couchbase" :default "cbfs"]
                     ["-p" "--password" "Password for the Couchbase bucket" :default ""]
                     ["-m" "--max-size" "Don't attempt to tag files larger than this size. (Can use K, M, G suffix)" :default 10485760 :parse-fn dehumanize]
+                    ["-n" "--min-size" "Don't attempt to tag files smaller than this size. (Can use K, M, G suffix)" :default 0 :parse-fn dehumanize]
                     ["-h" "--help" "Show help" :default false :flag true])]
     (when (:help config)
       (println usage)
