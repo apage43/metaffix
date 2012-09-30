@@ -67,7 +67,7 @@
         eligible-files (filter (fn [[file-id {:keys [length userdata oid]}]]
                                  (and
                                   ; Not bigger than maxsize
-                                  (<= maxsize length)
+                                  (>= maxsize length)
                                   ; Unprocessed or out of date
                                   (or (nil? (:metaffix userdata))
                                       (not= (get-in userdata [:metaffix :oid]) oid)))) (cbfs-files capis cbbucket))]
