@@ -1,0 +1,1 @@
+{"tagline":"metaffix","note":"Don't delete this file! It's used internally to help with page regeneration.","name":"Metaffix","google":"","body":"# metaffix\r\n\r\nAffix metadata to files in a [CBFS](http://github.com/couchbaselabs/cbfs) using Apache Tika.\r\n\r\n    lein run -- --help\r\n    lein run -- --couchbase http://clusterhost:8091/ --bucket cbfsbucket\r\n"}
